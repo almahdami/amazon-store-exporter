@@ -2,6 +2,7 @@
 """Save one Amazon product record as images, JSON, and a minimal DOCX."""
 
 import argparse
+import hashlib
 import json
 import mimetypes
 import re
@@ -13,6 +14,8 @@ from xml.sax.saxutils import escape
 
 
 INVALID = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+AMAZON_IMAGE_MARKER = re.compile(r"\._[^/]*_\.")
+AMAZON_IMAGE_EXT = re.compile(r"(\.(?:jpg|jpeg|png|webp))(?:$|\?)", re.IGNORECASE)
 
 
 def safe_name(value: str, limit: int = 100) -> str:
@@ -52,7 +55,47 @@ def make_docx(path: Path, item: dict) -> None:
         doc.writestr("word/_rels/document.xml.rels", doc_rels)
 
 
-def download_image(url: str, stem: Path) -> Path:
+def normalize_amazon_image_url(url: str) -> str:
+    """Return the highest-quality stable form of an Amazon image URL."""
+    parsed = urllib.parse.urlparse(str(url or "").strip())
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    path = urllib.parse.unquote(parsed.path)
+
+    if "media-amazon." in parsed.netloc or "ssl-images-amazon." in parsed.netloc:
+        path = AMAZON_IMAGE_MARKER.sub(".", path)
+        match = AMAZON_IMAGE_EXT.search(path)
+        if match:
+            path = path[: match.end(1)]
+
+    path = urllib.parse.quote(path, safe="/._-")
+    return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
+
+
+def image_identity(url: str) -> str:
+    normalized = normalize_amazon_image_url(url)
+    parsed = urllib.parse.urlparse(normalized)
+    path = parsed.path.lower()
+    if "media-amazon." in parsed.netloc or "ssl-images-amazon." in parsed.netloc:
+        path = AMAZON_IMAGE_MARKER.sub(".", path)
+        match = AMAZON_IMAGE_EXT.search(path)
+        if match:
+            path = path[: match.end(1)]
+    return f"{parsed.netloc.lower()}{path}"
+
+
+def unique_image_urls(urls: list[str]) -> list[str]:
+    unique = {}
+    for url in urls or []:
+        normalized = normalize_amazon_image_url(url)
+        if not normalized:
+            continue
+        key = image_identity(normalized)
+        unique.setdefault(key, normalized)
+    return list(unique.values())
+
+
+def download_image(url: str, stem: Path) -> tuple[Path, str]:
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Accept": "image/*"})
     with urllib.request.urlopen(request, timeout=45) as response:
         content_type = response.headers.get_content_type().lower()
@@ -66,7 +109,8 @@ def download_image(url: str, stem: Path) -> Path:
         ext = ".jpg"
     target = stem.with_suffix(ext)
     target.write_bytes(data)
-    return target
+    digest = hashlib.sha256(data).hexdigest()
+    return target, digest
 
 
 def main() -> int:
@@ -78,21 +122,25 @@ def main() -> int:
     asin = safe_name(str(item.get("asin") or "NO-ASIN"), 24)
     folder = args.output / f"{asin} - {safe_name(str(item.get('title') or ''), 100)}"
     folder.mkdir(parents=True, exist_ok=True)
+    item["image_urls"] = unique_image_urls(item.get("image_urls") or [])
     (folder / "product-data.json").write_text(json.dumps(item, ensure_ascii=False, indent=2), encoding="utf-8")
     make_docx(folder / "product-details.docx", item)
     failures = []
-    seen = set()
+    downloaded_hashes = {}
+    saved = 0
     for index, url in enumerate(item.get("image_urls") or [], 1):
-        if not url or url in seen:
-            continue
-        seen.add(url)
         try:
-            download_image(url, folder / f"{index:02d}")
+            target, digest = download_image(url, folder / f"{index:02d}")
+            if digest in downloaded_hashes:
+                target.unlink(missing_ok=True)
+                continue
+            downloaded_hashes[digest] = str(target.name)
+            saved += 1
         except Exception as exc:
             failures.append({"url": url, "error": str(exc)})
     if failures:
         (folder / "image-errors.json").write_text(json.dumps(failures, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps({"folder": str(folder), "images_saved": len(seen) - len(failures), "image_failures": len(failures)}, ensure_ascii=True))
+    print(json.dumps({"folder": str(folder), "images_saved": saved, "image_failures": len(failures)}, ensure_ascii=True))
     return 0
 
 

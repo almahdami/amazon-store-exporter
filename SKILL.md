@@ -27,11 +27,13 @@ Export a complete Amazon seller catalog into organized local folders. Use the si
    - `bullet_points` as an ordered array, excluding empty rows and obvious promotional widgets
    - `description`, preferring the Product Description/A+ descriptive text; do not mistake technical tables, reviews, recommendations, or shipping text for the description
    - `source_url` as a canonical product URL
-   - `image_urls` from the product gallery, preferring original/high-resolution URLs from page data over thumbnails
+   - `image_urls` from the main product gallery only, preferring original/high-resolution URLs from page data over thumbnails
 7. Preserve text verbatim and in its original language. Do not translate, rewrite, summarize, or invent missing fields. Use an empty string/list when a field is genuinely absent.
 8. Save one JSON record per product temporarily, then run:
 
    `python <skill-dir>/scripts/export_product.py --input <record.json> --output <export-root>`
+
+   Pass only product-level output roots to `--output`, never a product folder. The script creates exactly one product folder inside that root.
 
 9. Record each product as `exported`, `skipped`, or `failed` in `<export-root>/export-summary.csv`. Continue after isolated product errors. Include ASIN, title, URL, status, and a short error.
 10. At completion, report the export root, discovered/exported/failed counts, and failed ASINs. Provide a clickable link to the user-facing export directory when it is within the workspace outputs directory.
@@ -42,8 +44,11 @@ Export a complete Amazon seller catalog into organized local folders. Use the si
 - Typical title nodes include `#productTitle`.
 - Typical bullet containers include `#feature-bullets` and feature lists near the title.
 - Typical description sources include `#productDescription`, `#aplus`, and labeled Product Description sections. Preserve readable paragraph order.
-- Gallery data may appear in image elements, `data-a-dynamic-image`, `data-old-hires`, `hiRes`, or page-embedded JSON. Deduplicate normalized URLs and exclude icons, videos, swatches, and recommendation images.
+- Gallery data may appear in image elements, `data-a-dynamic-image`, `data-old-hires`, `hiRes`, `large`, or page-embedded JSON. Prefer these sources in order: embedded `colorImages.initial[].hiRes`, embedded `large`, `data-old-hires`, then the largest key in `data-a-dynamic-image`. Avoid using visible thumbnails as final image URLs.
+- Normalize Amazon image URLs before saving. Strip sizing/transformation segments such as `._AC_SL1500_`, `._SX679_`, `._SS40_`, `._AC_US40_`, and similar marker blocks so the URL points to the base image file. This prevents downloading the same image in multiple sizes.
+- Deduplicate gallery images by normalized base image identity, not by the raw URL string. The same image may appear as a thumbnail, hover image, and high-resolution image with different URLs.
 - Do not download customer-review images or images from related/sponsored products.
+- Do not include swatches, videos, icons, badges, review images, recommendation images, or images from comparison widgets.
 - If a product is unavailable but its page still exposes listing content, export the available fields and note the condition in the summary.
 
 ## Output contract
@@ -63,10 +68,13 @@ amazon-store-export-YYYYMMDD-HHMM/
 
 Sanitize folder names for the operating system, collapse whitespace, cap the title portion to 100 characters, and keep the ASIN at the start. Never overwrite another ASIN's folder. The bundled script performs this normalization and writes the Word file.
 
+Each product folder must contain only that product's final unique gallery images, `product-details.docx`, `product-data.json`, and optional `image-errors.json`. Do not create nested product folders or extra subfolders inside a product folder.
+
 ## Quality checks
 
 - Confirm the number of unique product URLs collected across all pages.
 - For a small catalog, compare the export folders to every discovered ASIN. For a large catalog, compare counts and spot-check the first, middle, and last exported products.
 - Open at least one generated Word file and verify that title, bullets, description, and source URL are readable.
-- Verify downloaded files are actual images and not HTML challenge pages; the script rejects non-image responses.
+- Verify downloaded files are actual high-resolution images and not thumbnails or HTML challenge pages; the script rejects non-image responses and removes duplicate binary files.
+- Spot-check one exported product folder: repeated-looking images should not appear as the same base image in different sizes, and image count should roughly match the Amazon product gallery rather than thumbnail repetitions.
 - Never claim completeness when pagination was blocked or interrupted. State the last completed page and partial counts.
