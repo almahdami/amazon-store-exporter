@@ -1,0 +1,4 @@
+interface:
+  display_name: "Amazon Store Exporter"
+  short_description: "Export Amazon products, images, and listing copy"
+  default_prompt: "Use $amazon-store-exporter to export every product from this Amazon store URL into organized folders with images and Word files."
