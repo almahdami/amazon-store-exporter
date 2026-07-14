@@ -8,6 +8,7 @@ Given an Amazon store URL, the skill:
 - deduplicates products by ASIN
 - downloads unique high-resolution product gallery images
 - removes duplicate Amazon image URLs that only differ by thumbnail or size markers
+- keeps the larger file when Amazon exposes the same image as both low- and high-resolution files
 - creates one folder per product
 - writes `product-details.docx` with title, bullet points, description, ASIN, and source URL
 - writes `product-data.json` for structured reuse

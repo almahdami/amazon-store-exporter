@@ -16,6 +16,7 @@ from xml.sax.saxutils import escape
 INVALID = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 AMAZON_IMAGE_MARKER = re.compile(r"\._[^/]*_\.")
 AMAZON_IMAGE_EXT = re.compile(r"(\.(?:jpg|jpeg|png|webp))(?:$|\?)", re.IGNORECASE)
+AMAZON_SIZE_HINT = re.compile(r"[._](?:AC_)?(?:SL|SX|SY|UX|UY|UL|US|SS)(\d+)", re.IGNORECASE)
 
 
 def safe_name(value: str, limit: int = 100) -> str:
@@ -72,27 +73,50 @@ def normalize_amazon_image_url(url: str) -> str:
     return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
 
 
+def amazon_image_file_key(path: str) -> str:
+    name = Path(path).name.lower()
+    name = AMAZON_IMAGE_MARKER.sub(".", name)
+    match = AMAZON_IMAGE_EXT.search(name)
+    if match:
+        name = name[: match.end(1)]
+    stem, ext = Path(name).stem, Path(name).suffix
+    if len(stem) > 12 and stem[:2].isalnum():
+        stem = stem[2:]
+    return f"{stem}{ext}"
+
+
 def image_identity(url: str) -> str:
     normalized = normalize_amazon_image_url(url)
     parsed = urllib.parse.urlparse(normalized)
     path = parsed.path.lower()
     if "media-amazon." in parsed.netloc or "ssl-images-amazon." in parsed.netloc:
-        path = AMAZON_IMAGE_MARKER.sub(".", path)
-        match = AMAZON_IMAGE_EXT.search(path)
-        if match:
-            path = path[: match.end(1)]
+        path = str(Path(path).parent / amazon_image_file_key(path)).replace("\\", "/")
     return f"{parsed.netloc.lower()}{path}"
 
 
+def image_quality_score(url: str) -> tuple[int, int]:
+    parsed = urllib.parse.urlparse(str(url or ""))
+    path = urllib.parse.unquote(parsed.path)
+    hints = [int(value) for value in AMAZON_SIZE_HINT.findall(path)]
+    marker_score = max(hints) if hints else 0
+    file_name = Path(path).name
+    prefix_score = 0
+    if len(file_name) >= 2 and file_name[:2].isdigit():
+        prefix_score = int(file_name[:2])
+    return marker_score, prefix_score
+
+
 def unique_image_urls(urls: list[str]) -> list[str]:
-    unique = {}
+    unique: dict[str, tuple[tuple[int, int], str]] = {}
     for url in urls or []:
         normalized = normalize_amazon_image_url(url)
         if not normalized:
             continue
         key = image_identity(normalized)
-        unique.setdefault(key, normalized)
-    return list(unique.values())
+        score = image_quality_score(url)
+        if key not in unique or score > unique[key][0]:
+            unique[key] = (score, normalized)
+    return [value for _, value in unique.values()]
 
 
 def download_image(url: str, stem: Path) -> tuple[Path, str]:
@@ -113,6 +137,32 @@ def download_image(url: str, stem: Path) -> tuple[Path, str]:
     return target, digest
 
 
+def compact_duplicate_images(paths: list[Path]) -> list[Path]:
+    groups: dict[str, list[Path]] = {}
+    for path in paths:
+        key = amazon_image_file_key(path.name)
+        groups.setdefault(key, []).append(path)
+
+    kept = []
+    for group in groups.values():
+        best = max(group, key=lambda item: item.stat().st_size)
+        kept.append(best)
+        for duplicate in group:
+            if duplicate != best:
+                duplicate.unlink(missing_ok=True)
+
+    kept.sort(key=lambda item: item.name)
+    for index, path in enumerate(kept, 1):
+        new_path = path.with_name(f"{index:02d}{path.suffix.lower()}")
+        if path != new_path:
+            if new_path.exists():
+                new_path.unlink()
+            path.rename(new_path)
+            path = new_path
+        kept[index - 1] = path
+    return kept
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True, type=Path)
@@ -127,6 +177,7 @@ def main() -> int:
     make_docx(folder / "product-details.docx", item)
     failures = []
     downloaded_hashes = {}
+    downloaded_paths = []
     saved = 0
     for index, url in enumerate(item.get("image_urls") or [], 1):
         try:
@@ -135,9 +186,12 @@ def main() -> int:
                 target.unlink(missing_ok=True)
                 continue
             downloaded_hashes[digest] = str(target.name)
+            downloaded_paths.append(target)
             saved += 1
         except Exception as exc:
             failures.append({"url": url, "error": str(exc)})
+    downloaded_paths = compact_duplicate_images(downloaded_paths)
+    saved = len(downloaded_paths)
     if failures:
         (folder / "image-errors.json").write_text(json.dumps(failures, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps({"folder": str(folder), "images_saved": saved, "image_failures": len(failures)}, ensure_ascii=True))
