@@ -38,6 +38,14 @@ Export a complete Amazon seller catalog into organized local folders. Use the si
 9. Record each product as `exported`, `skipped`, or `failed` in `<export-root>/export-summary.csv`. Continue after isolated product errors. Include ASIN, title, URL, status, and a short error.
 10. At completion, report the export root, discovered/exported/failed counts, and failed ASINs. Provide a clickable link to the user-facing export directory when it is within the workspace outputs directory.
 
+## Browser setup recovery
+
+- If browser setup fails before Amazon opens with `Cannot redefine property: process`, treat it as a Codex/browser-control session issue, not an Amazon export issue.
+- Do not start a partial export when this happens. Tell the user no products were collected yet.
+- Ask the user to start a fresh Codex task or restart Codex, then rerun the same store URL.
+- After restart, use the browser normally and continue from Workflow step 1.
+- Never report that Amazon blocked the export unless the Amazon page itself displays a CAPTCHA, robot check, sign-in wall, or region-choice dialog.
+
 ## Extraction guidance
 
 - Use live DOM inspection first. Amazon selectors vary by locale and experiment; locate fields semantically and use several selector candidates instead of relying on one brittle selector.
